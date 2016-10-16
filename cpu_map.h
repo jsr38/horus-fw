@@ -91,24 +91,6 @@
   #define LASER3_BIT      2  // Uno Digital Pin 2
   #define LASER4_BIT      5  // Uno Digital Pin 5
   #define LASER_MASK      ((1<<LASER1_BIT)|(1<<LASER2_BIT)|(1<<LASER3_BIT)|(1<<LASER4_BIT)) // All step bits
-
-  // Define step pulse output pins. NOTE: All step bit pins must be on the same port.
-  #define STEP_DDR        DDRB
-  #define STEP_PORT       PORTB
-  #define X_STEP_BIT      4  // Uno Digital Pin 12
-  #define STEP_MASK       (1<<X_STEP_BIT) // All step bits
-
-  // Define step direction output pins. NOTE: All direction pins must be on the same port.
-  #define DIRECTION_DDR     DDRB
-  #define DIRECTION_PORT    PORTB
-  #define X_DIRECTION_BIT   5  // Uno Digital Pin 13
-  #define DIRECTION_MASK    (1<<X_DIRECTION_BIT) // All direction bits
-
-  // Define stepper driver enable/disable output pin.
-  #define STEPPERS_DISABLE_DDR    DDRB
-  #define STEPPERS_DISABLE_PORT   PORTB
-  #define STEPPERS_DISABLE_BIT    1  // Uno Digital Pin 9
-  #define STEPPERS_DISABLE_MASK   (1<<STEPPERS_DISABLE_BIT)
  
   // Define optical encoder input pins
   #define OPTICAL_ENCODER_DDR    DDRC   // 
@@ -118,6 +100,18 @@
   #define OPTICAL_ENCODER_Z_PIN  PINC   // PINC register
   #define OPTICAL_ENCODER_Z_BIT  3      // PORTC bit 3 (digital)
   #define OPTICAL_ENCODER_Z_MASK (1<<OPTICAL_ENCODER_Z_BIT)
+
+  // MOTOR CONTROL
+  #define M1_IN_A_PORT		PORTD
+  #define M1_IN_A_DDR			DDRD
+  #define M1_IN_A				6		// PCINT22 (PCI2)
+  #define M1_IN_B_PORT		PORTD
+  #define M1_IN_B_DDR			DDRD
+  #define M1_IN_B				5		// PCINT21 (PCI2)
+  #define M1_DIAG_A_PORT		PORTB
+  #define M1_DIAG_A_PIN		PINB
+  #define M1_DIAG_A_DDR		DDRB
+  #define M1_DIAG_A			4		// PCINT4 (PCI0) X
 
   // Define probe switch input pin.
   #define PROBE_DDR       DDRC

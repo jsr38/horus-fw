@@ -25,6 +25,9 @@
 */
 
 #include "system.h"
+
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
+
 #include "nuts_bolts.h"
 #include "stepper.h"
 #include "settings.h"
@@ -868,3 +871,5 @@ void st_prep_buffer()
     return 0.0f;
   }
 #endif
+
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO

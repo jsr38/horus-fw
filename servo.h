@@ -3,7 +3,7 @@
   Part of Horus Firmware
 
   Copyright (c) 2014-2015 Mundo Reader S.L.
-  Copyright (c) 2016 Jeremy Reeve
+  Copyright (c) 2016 Jeremy Simas Reeve
 
   Horus Firmware is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,9 +28,77 @@
 #ifndef servo_h
 #define servo_h 
 
+// Nice functions to have predefined
+#define BIT(x) (1 << (x))
+#define SETBITS(x,y) ((x) |= (y))
+#define CLEARBITS(x,y) ((x) &= (~(y)))
+#define SETBIT(x,y) SETBITS((x), (BIT((y))))
+#define CLEARBIT(x,y) CLEARBITS((x), (BIT((y))))
+#define BITSET(x,y) ((x) & (BIT(y)))
+#define BITCLEAR(x,y) !BITSET((x), (y))
+#define BITSSET(x,y) (((x) & (y)) == (y))
+#define BITSCLEAR(x,y) (((x) & (y)) == 0)
+#define BITVAL(x,y) (((x)>>(y)) & 1)
+
+#define MIN(a,b)              ((a<b)?(a):(b))
+#define MAX(a,b)              ((a>b)?(a):(b))
+#define ABS(x)                ((x>0)?(x):(-x))
+#define LIMIT(x,low,high)     ((x>high)?(high):((x<low)?(low):(x)))
+
 #ifndef SEGMENT_BUFFER_SIZE
   #define SEGMENT_BUFFER_SIZE 6
 #endif
+
+/*
+ * PWM definitions
+ */
+
+#define FULL_PWM 		ICR1
+#define M1_PWM	 		OCR1B
+#define M2_PWM 			OCR1A
+
+/*
+ * Motor control subroutines
+ */
+
+// On disable, we disable the pin change interrupt, set the DIAG pin as output and pull the DIAG line low
+//#define M1_DISABLE			CLEARBIT(PCMSK0, M1_DIAG_A); CLEARBIT(PCMSK0, M1_DIAG_B); SETBIT(M1_DIAG_A_DDR, M1_DIAG_A); SETBIT(M1_DIAG_B_DDR, M1_DIAG_B); CLEARBIT(M1_DIAG_A_PORT, M1_DIAG_A); CLEARBIT(M1_DIAG_B_PORT, M1_DIAG_B)
+//#define M1_ENABLE			CLEARBIT(M1_DIAG_A_DDR, M1_DIAG_A); CLEARBIT(M1_DIAG_B_DDR, M1_DIAG_B); SETBIT(PCMSK0, M1_DIAG_A); SETBIT(PCMSK0, M1_DIAG_B)
+
+// Note that CW and CCW are basically reversed for backwards compatability (changes Polarity setting)
+#define M1_CCW				SETBIT(M1_IN_A_PORT, M1_IN_A); CLEARBIT(M1_IN_B_PORT, M1_IN_B)
+#define M1_CW				CLEARBIT(M1_IN_A_PORT, M1_IN_A); SETBIT(M1_IN_B_PORT, M1_IN_B)
+#define M1_STOP_GND			CLEARBIT(M1_IN_A_PORT, M1_IN_A); CLEARBIT(M1_IN_B_PORT, M1_IN_B)
+#define M1_STOP_VCC			SETBIT(M1_IN_A_PORT, M1_IN_A); SETBIT(M1_IN_B_PORT, M1_IN_B)
+
+/*
+ * Enumeration definitions
+ */
+
+#define ENABLE_OFF			0
+#define ENABLE_ON			1
+
+#define MIXED_MODE_STATE_OFF	0
+#define MIXED_MODE_STATE_POS	1
+#define MIXED_MODE_STATE_VEL	2
+
+#define STREAM_MODE_OFF		0
+#define STREAM_MODE_ON		1
+
+#define CONTROL_MODE_POS	0
+#define CONTROL_MODE_VEL	1
+#define CONTROL_MODE_MIXED	2
+
+#define FEEDBACK_MODE_ENC	0
+#define FEEDBACK_MODE_POT	1
+
+#define POLARITY_REGULAR	0
+#define POLARITY_FLIPPED	1
+
+#define OUTPUT_DIRECTION_CW		0
+#define OUTPUT_DIRECTION_CCW	1
+#define OUTPUT_DIRECTION_NONE	2
+
 
 // Initialize and setup the servo motor subsystem
 void servo_init();

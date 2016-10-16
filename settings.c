@@ -221,12 +221,20 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
         settings.pulse_microseconds = int_value; break;
       case 1: settings.stepper_idle_lock_time = int_value; break;
       case 2: 
-        settings.step_invert_mask = int_value; 
-        st_generate_step_dir_invert_masks(); // Regenerate step and direction port invert masks.
+        settings.step_invert_mask = int_value;
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
+	st_generate_step_dir_invert_masks(); // Regenerate step and direction port invert masks.
+#else
+	servo_generate_step_dir_invert_masks(); // Regenerate step and direction port invert masks.
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
         break;
       case 3: 
-        settings.dir_invert_mask = int_value; 
-        st_generate_step_dir_invert_masks(); // Regenerate step and direction port invert masks.
+        settings.dir_invert_mask = int_value;
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
+	st_generate_step_dir_invert_masks(); // Regenerate step and direction port invert masks.
+#else
+	servo_generate_step_dir_invert_masks(); // Regenerate step and direction port invert masks.
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
         break;
       case 4: // Reset to ensure change. Immediate re-init may cause problems.
         if (int_value) { settings.flags |= BITFLAG_INVERT_ST_ENABLE; }
@@ -310,7 +318,7 @@ void settings_init() {
   // TODO: Build info should be checked here, but will wait until v1.0 to address this. Ok for now.
 }
 
-
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
 // Returns step pin mask according to Grbl internal axis indexing.
 uint8_t get_step_pin_mask(uint8_t axis_idx)
 {
@@ -330,6 +338,7 @@ uint8_t get_direction_pin_mask(uint8_t axis_idx)
   return((1<<X_DIRECTION_BIT));
 }
 
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
 
 /*// Returns limit pin mask according to Grbl internal axis indexing.
 uint8_t get_limit_pin_mask(uint8_t axis_idx)

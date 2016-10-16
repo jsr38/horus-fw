@@ -3,6 +3,7 @@
   Part of Horus Firmware
 
   Copyright (c) 2014-2015 Mundo Reader S.L.
+  Copyright (c) 2016 Jeremy Simas Reeve
 
   Horus Firmware is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -718,14 +719,24 @@ uint8_t gc_execute_line(char *line)
   // [23. Motor control ]:  
   gc_state.modal.motor = gc_block.modal.motor;
   if (gc_block.modal.motor == MOTOR_ENABLE) {
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
     st_disable_on_idle(false);
     st_wake_up();
+#else
+    servo_disable_on_idle(false);
+    servo_wake_up();    
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
   }
   else {
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
     st_disable_on_idle(true);
     st_go_idle();
+#else
+    servo_disable_on_idle(true);
+    servo_go_idle();    
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
   }
-  // [23. LDR read ]:
+  // [24. LDR read ]:
   if (gc_block.modal.ldr == LDR_READ){
       print_ldr(gc_block.values.t);
   }

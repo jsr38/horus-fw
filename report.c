@@ -439,8 +439,12 @@ void report_realtime_status()
     
   #ifdef REPORT_REALTIME_RATE
     // Report realtime rate 
-    printPgmString(PSTR(",F:")); 
+    printPgmString(PSTR(",F:"));
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
     printFloat_RateValue(st_get_realtime_rate());
+#else
+    printFloat_RateValue(servo_get_realtime_rate());
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
   #endif    
   
   printPgmString(PSTR(">\r\n"));

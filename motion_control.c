@@ -3,6 +3,7 @@
   Part of Horus Firmware
 
   Copyright (c) 2014-2015 Mundo Reader S.L.
+  Copyright (c) 2016 Jeremy Simas Reeve
 
   Horus Firmware is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -315,7 +316,11 @@ void mc_homing_cycle()
   if (sys.abort) { return; } // Check for system abort
 
   // Reset the stepper and planner buffers to remove the remainder of the probe motion.
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
   st_reset(); // Reest step segment buffer.
+#else
+  servo_reset(); // Reest servo move segment buffer.
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
   plan_reset(); // Reset planner buffer. Zero planner positions. Ensure probing motion is cleared.
   plan_sync_position(); // Sync planner position to current machine position.
   
@@ -367,7 +372,11 @@ void mc_reset()
     // violated, by which, all bets are off.
     if (sys.state & (STATE_CYCLE | STATE_HOLD | STATE_HOMING)) {
       bit_true_atomic(sys.execute, EXEC_ALARM); // Flag main program to execute alarm state.
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
       st_go_idle(); // Force kill steppers. Position has likely been lost.
+#else
+      servo_go_idle();  // Force kill servo. Position has likely been lost.
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
     }
   }
 }

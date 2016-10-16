@@ -82,7 +82,11 @@ int main(void)
     laser_init();
     probe_init();
     plan_reset(); // Clear block buffer and planner variables
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
     st_reset(); // Clear stepper subsystem variables.
+#else
+    servo_reset(); // Clear servo subsystem variables.
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
 
     // Sync cleared gcode and planner positions to current system position.
     plan_sync_position();

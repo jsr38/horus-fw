@@ -3,6 +3,7 @@
   Part of Horus Firmware
 
   Copyright (c) 2014-2015 Mundo Reader S.L.
+  Copyright (c) 2016 Jeremy Simas Reeve
 
   Horus Firmware is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -156,7 +157,11 @@ static void planner_recalculate()
   block_index = plan_prev_block_index(block_index);
   if (block_index == block_buffer_planned) { // Only two plannable blocks in buffer. Reverse pass complete.
     // Check if the first block is the tail. If so, notify stepper to update its current parameters.
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
     if (block_index == block_buffer_tail) { st_update_plan_block_parameters(); }
+#else
+    if (block_index == block_buffer_tail) { servo_update_plan_block_parameters(); }    
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
   } else { // Three or more plan-able blocks
     while (block_index != block_buffer_planned) { 
       next = current;
@@ -164,7 +169,11 @@ static void planner_recalculate()
       block_index = plan_prev_block_index(block_index);
 
       // Check if next block is the tail block(=planned block). If so, update current stepper parameters.
-      if (block_index == block_buffer_tail) { st_update_plan_block_parameters(); } 
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
+    if (block_index == block_buffer_tail) { st_update_plan_block_parameters(); }
+#else
+    if (block_index == block_buffer_tail) { servo_update_plan_block_parameters(); }    
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
 
       // Compute maximum entry speed decelerating over the current block from its exit speed.
       if (current->entry_speed_sqr != current->max_entry_speed_sqr) {
@@ -298,7 +307,11 @@ uint8_t plan_check_full_buffer()
     unit_vec[idx] = delta_deg; // Store unit vector numerator. Denominator computed later.
         
     // Set direction bits. Bit enabled always means direction is negative.
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
     if (delta_deg < 0 ) { block->direction_bits |= get_direction_pin_mask(idx); }
+#else
+
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
     
     // Incrementally compute total move distance by Euclidean norm. First add square of each term.
     block->degrees += delta_deg*delta_deg;
@@ -423,7 +436,12 @@ uint8_t plan_get_block_buffer_count()
 void plan_cycle_reinitialize()
 {
   // Re-plan from a complete stop. Reset planner entry speeds and buffer planned pointer.
-  st_update_plan_block_parameters();
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
+    st_update_plan_block_parameters();
+#else
+    servo_update_plan_block_parameters();
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
+
   block_buffer_planned = block_buffer_tail;
   planner_recalculate();  
 }

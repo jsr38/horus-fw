@@ -3,6 +3,7 @@
   Part of Horus Firmware
 
   Copyright (c) 2014-2015 Mundo Reader S.L.
+  Copyright (c) 2016 Jeremy Simas Reeve
 
   Horus Firmware is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -236,8 +237,13 @@ void protocol_execute_runtime()
       // with the feed hold should be fine for most, if not all, operational scenarios.
       if (sys.state == STATE_CYCLE) {
         sys.state = STATE_HOLD;
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
         st_update_plan_block_parameters();
         st_prep_buffer();
+#else
+        servo_update_plan_block_parameters();
+        servo_prep_buffer();
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
         sys.auto_start = false; // Disable planner auto start upon feed hold.
       }
       bit_false_atomic(sys.execute,EXEC_FEED_HOLD);
@@ -247,11 +253,12 @@ void protocol_execute_runtime()
     if (rt_exec & EXEC_CYCLE_START) { 
       if (sys.state == STATE_QUEUED) {
         sys.state = STATE_CYCLE;
-#ifdef CPU_MAP_ATMEGA328P_HORUS_SERVO
-	
-#else
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
         st_prep_buffer(); // Initialize step segment buffer before beginning cycle.
-        st_wake_up();
+        st_wake_up();	
+#else
+        servo_prep_buffer(); // Initialize step segment buffer before beginning cycle.
+        servo_wake_up();		
 #endif
         if (bit_istrue(settings.flags,BITFLAG_AUTO_START)) {
           sys.auto_start = true; // Re-enable auto start after feed hold.
@@ -279,8 +286,12 @@ void protocol_execute_runtime()
   // are runtime and require a direct and controlled interface to the main stepper program.
 
   // Reload step segment buffer
+#ifndef CPU_MAP_ATMEGA328P_HORUS_SERVO
   if (sys.state & (STATE_CYCLE | STATE_HOLD | STATE_HOMING)) { st_prep_buffer(); }  
-  
+#else
+  if (sys.state & (STATE_CYCLE | STATE_HOLD | STATE_HOMING)) { servo_prep_buffer(); }
+#endif // CPU_MAP_ATMEGA328P_HORUS_SERVO
+
 }  
 
 

@@ -3,7 +3,7 @@
   Part of Horus Firmware
 
   Copyright (c) 2014-2015 Mundo Reader S.L.
-  Copyright (c) 2016 Jeremy Reeve
+  Copyright (c) 2016 Jeremy Simas Reeve
 
   Horus Firmware is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,6 +28,8 @@
 #include "system.h"
 #include "nuts_bolts.h"
 #include "servo.h"
+#include "servo_pid.h"
+#include "dc_motor.h"
 #include "settings.h"
 #include "planner.h"
 #include "probe.h"
@@ -56,6 +58,62 @@
 #define AMASS_LEVEL3 (F_CPU/2000) // Over-drives ISR (x8)
 
 
+/*
+ * Servo pin functionality
+ */
+#define SERVO_LONG_WAIT_TIME    190 // Defines long wait to be approx 15ms
+#define SERVO_SHORT_WAIT_TIME   77 // Defines short wait to be approx 0.5ms
+
+#define SERVO_TIMER_ENABLE 			TIMSK2 = (1 << OCIE2A); TCCR2A = (1 << WGM21); TCNT2 = 0; servo_state = 0; SERVO_SET_LONG_WAIT
+#define SERVO_TIMER_DISABLE 		TIMSK2 = 0
+#define SERVO_PRESCALER_1024		TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20)
+#define SERVO_PRESCALER_256			TCCR2B = (1 << CS22) | (1 << CS21) | (0 << CS20)
+#define SERVO_PRESCALER_128			TCCR2B = (1 << CS22) | (0 << CS21) | (1 << CS20)
+#define SERVO_PRESCALER_64			TCCR2B = (1 << CS22) | (0 << CS21) | (0 << CS20)
+#define SERVO_SET_SHORT_WAIT		SERVO_PRESCALER_256; OCR2A = SERVO_SHORT_WAIT_TIME // Set prescaler to 256 and timer to short
+#define SERVO_SET_LONG_WAIT			SERVO_PRESCALER_1024; OCR2A = SERVO_LONG_WAIT_TIME // Set prescaler to 1024 and timer to long
+
+volatile unsigned char servo_state;
+volatile unsigned char servo_active;
+
+/*
+ * Global variables for both motors and their defaults
+ */
+uint8_t volatile id;
+uint8_t volatile new_id;
+volatile uint8_t should_change_id;
+
+uint32_t volatile loop_count = 0;
+
+uint8_t volatile pid_update_period = 195;	// Sets the update rate at around 100Hz
+
+/*
+ * Settings variables for the motors
+ */
+
+#define TARGET_BUFFER_NR_LONGS 		3
+#define ACTUAL_BUFFER_NR_LONGS 		5
+
+#define TARGET_BUFFER_SIZE 			(TARGET_BUFFER_NR_LONGS << 2)
+#define ACTUAL_BUFFER_SIZE 			(ACTUAL_BUFFER_NR_LONGS << 2)
+static uint8_t target_buffer_data_A[TARGET_BUFFER_SIZE];
+static uint8_t target_buffer_data_B[TARGET_BUFFER_SIZE];
+static uint8_t actual_buffer_data_A[ACTUAL_BUFFER_SIZE];
+static uint8_t actual_buffer_data_B[ACTUAL_BUFFER_SIZE];
+
+/*
+ * a2d vars
+ */
+#define A2D_ITERATIONS_DIV2 	2
+#define A2D_ITERATIONS 			1<<A2D_ITERATIONS_DIV2		// Needs to be divisible by 2
+
+uint8_t volatile a2d_index;
+uint8_t volatile a2d_counter;
+
+uint16_t volatile a2d_value;
+uint8_t volatile a2d_value_ready_flag;
+
+
 // Stores the planner block Bresenham algorithm execution data for the segments in the segment 
 // buffer. Normally, this buffer is partially in-use, but, for the worst case scenario, it will
 // never exceed the number of accessible servo buffer segments (SEGMENT_BUFFER_SIZE-1).
@@ -66,7 +124,7 @@ typedef struct {
   uint8_t direction_bits;
   uint32_t steps[N_AXIS];
   uint32_t step_event_count;
-} st_block_t;
+} servo_block_t;
 static servo_block_t servo_block_buffer[SEGMENT_BUFFER_SIZE-1];
 
 // Primary servo segment ring buffer. Contains small, short line segments for the servo 
@@ -84,6 +142,8 @@ typedef struct {
   #endif
 } segment_t;
 static segment_t segment_buffer[SEGMENT_BUFFER_SIZE];
+
+volatile motor_t motor;
 
 // Servo ISR data struct. Contains the running data for the main servo ISR.
 typedef struct {
@@ -107,8 +167,36 @@ typedef struct {
   uint8_t exec_block_index; // Tracks the current servo_block index. Change indicates new block.
   servo_block_t *exec_block;   // Pointer to the block data for the segment being executed
   segment_t *exec_segment;  // Pointer to the segment being executed
+
+  volatile motor_t* motor;
+
+  //circBuffer target_buffer, actual_buffer;
+  
+  pid_t pid, pid_vel;
+  
+  uint8_t initialized;
+  uint8_t notified_initialized;
+  
+  uint8_t enable;
+  uint8_t control_mode;
+  uint8_t feedback_mode;
+  uint8_t target_mode;
+  uint8_t polarity;
+  uint8_t stream_mode;
+  
+  int32_t command_vel;
+  int32_t maximum_vel;
+  int32_t maximum_acc;
+  
+  uint16_t maximum_pwm;
+  uint8_t mixed_mode_state;
+  
+  int32_t actual_tick_diff;
+  
+  int32_t output;
+  uint8_t output_direction;
 } servo_t;
-static servo_t st;
+static servo_t servo;
 
 // Step segment ring buffer indices
 static volatile uint8_t segment_buffer_tail;
@@ -190,32 +278,19 @@ static servo_prep_t prep;
 */
 
 
-// Servo state initialization. Cycle should only start if the st.cycle_start flag is
+// Servo state initialization. Cycle should only start if the servo.cycle_start flag is
 // enabled. Startup init and limits call this function but shouldn't start the cycle.
 void servo_wake_up() 
 {
   // Enable servo drivers.
-  if (bit_istrue(settings.flags,BITFLAG_INVERT_SERVO_ENABLE)) { SERVOS_DISABLE_PORT |= (1<<SERVOS_DISABLE_BIT); }
-  else { SERVOS_DISABLE_PORT &= ~(1<<SERVOS_DISABLE_BIT); }
 
   if (sys.state & (STATE_CYCLE | STATE_HOMING)){
     // Initialize servo output bits
-    st.dir_outbits = dir_port_invert_mask; 
-    st.step_outbits = step_port_invert_mask;
+    servo.dir_outbits = dir_port_invert_mask; 
+    servo.step_outbits = step_port_invert_mask;
     
-    // Initialize step pulse timing from settings. Here to ensure updating after re-writing.
-    #ifdef STEP_PULSE_DELAY
-      // Set total step pulse time after direction pin set. Ad hoc computation from oscilloscope.
-      st.step_pulse_time = -(((settings.pulse_microseconds+STEP_PULSE_DELAY-2)*TICKS_PER_MICROSECOND) >> 3);
-      // Set delay between direction pin write and step command.
-      OCR0A = -(((settings.pulse_microseconds)*TICKS_PER_MICROSECOND) >> 3);
-    #else // Normal operation
-      // Set step pulse time. Ad hoc computation from oscilloscope. Uses two's complement.
-      st.step_pulse_time = -(((settings.pulse_microseconds-2)*TICKS_PER_MICROSECOND) >> 3);
-    #endif
-
     // Enable Servo Driver Interrupt
-    TIMSK1 |= (1<<OCIE1A);
+
   }
 }
 
@@ -227,133 +302,62 @@ void servo_disable_on_idle(uint8_t disable)
 // Servo shutdown
 void servo_go_idle() 
 {
-  // Disable Servo Driver Interrupt. Allow Servo Port Reset Interrupt to finish, if active.
-  TIMSK1 &= ~(1<<OCIE1A); // Disable Timer1 interrupt
-  TCCR1B = (TCCR1B & ~((1<<CS12) | (1<<CS11))) | (1<<CS10); // Reset clock to no prescaling.
   busy = false;
   
   // Set servo driver idle state, disabled or enabled, depending on settings and circumstances.
   bool pin_state = false; // Keep enabled.
-  if (((settings.servo_idle_lock_time != 0xff) || bit_istrue(sys.execute,EXEC_ALARM)) && sys.state != STATE_HOMING) {
+  if ((bit_istrue(sys.execute,EXEC_ALARM)) && sys.state != STATE_HOMING) {
     // Force servo dwell to lock axes for a defined amount of time to ensure the axes come to a complete
-    // stop and not drift from residual inertial forces at the end of the last movement.
-    delay_ms(settings.servo_idle_lock_time);
     pin_state = true; // Override. Disable servos.
   }
   if (disable_motor) {
-    if (bit_istrue(settings.flags,BITFLAG_INVERT_SERVO_ENABLE)) { pin_state = !pin_state; } // Apply pin invert.
-    if (pin_state) { SERVOS_DISABLE_PORT |= (1<<SERVOS_DISABLE_BIT); }
-    else { SERVOS_DISABLE_PORT &= ~(1<<SERVOS_DISABLE_BIT); }
+
   }
 }
 
-
-/* "The Servo Driver Interrupt" - This timer interrupt is the workhorse of Grbl. Grbl employs
-   the venerable Bresenham line algorithm to manage and exactly synchronize multi-axis moves.
-   Unlike the popular DDA algorithm, the Bresenham algorithm is not susceptible to numerical
-   round-off errors and only requires fast integer counters, meaning low computational overhead
-   and maximizing the Arduino's capabilities. However, the downside of the Bresenham algorithm
-   is, for certain multi-axis motions, the non-dominant axes may suffer from un-smooth step 
-   pulse trains, or aliasing, which can lead to strange audible noises or shaking. This is 
-   particularly noticeable or may cause motion issues at low step frequencies (0-5kHz), but 
-   is usually not a physical problem at higher frequencies, although audible.
-     To improve Bresenham multi-axis performance, Grbl uses what we call an Adaptive Multi-Axis
-   Step Smoothing (AMASS) algorithm, which does what the name implies. At lower step frequencies,
-   AMASS artificially increases the Bresenham resolution without effecting the algorithm's 
-   innate exactness. AMASS adapts its resolution levels automatically depending on the step
-   frequency to be executed, meaning that for even lower step frequencies the step smoothing 
-   level increases. Algorithmically, AMASS is acheived by a simple bit-shifting of the Bresenham
-   step count for each AMASS level. For example, for a Level 1 step smoothing, we bit shift 
-   the Bresenham step event count, effectively multiplying it by 2, while the axis step counts 
-   remain the same, and then double the servo ISR frequency. In effect, we are allowing the
-   non-dominant Bresenham axes step in the intermediate ISR tick, while the dominant axis is 
-   stepping every two ISR ticks, rather than every ISR tick in the traditional sense. At AMASS
-   Level 2, we simply bit-shift again, so the non-dominant Bresenham axes can step within any 
-   of the four ISR ticks, the dominant axis steps every four ISR ticks, and quadruple the 
-   servo ISR frequency. And so on. This, in effect, virtually eliminates multi-axis aliasing 
-   issues with the Bresenham algorithm and does not significantly alter Grbl's performance, but 
-   in fact, more efficiently utilizes unused CPU cycles overall throughout all configurations.
-     AMASS retains the Bresenham algorithm exactness by requiring that it always executes a full
-   Bresenham step, regardless of AMASS Level. Meaning that for an AMASS Level 2, all four 
-   intermediate steps must be completed such that baseline Bresenham (Level 0) count is always 
-   retained. Similarly, AMASS Level 3 means all eight intermediate steps must be executed. 
-   Although the AMASS Levels are in reality arbitrary, where the baseline Bresenham counts can
-   be multiplied by any integer value, multiplication by powers of two are simply used to ease 
-   CPU overhead with bitshift integer operations. 
-     This interrupt is simple and dumb by design. All the computational heavy-lifting, as in
-   determining accelerations, is performed elsewhere. This interrupt pops pre-computed segments,
-   defined as constant velocity over n number of steps, from the step segment buffer and then 
-   executes them by pulsing the servo pins appropriately via the Bresenham algorithm. This 
-   ISR is supported by The Servo Port Reset Interrupt which it uses to reset the servo port
-   after each pulse. The bresenham line tracer algorithm controls all servo outputs
-   simultaneously with these two interrupts.
-   
-   NOTE: This interrupt must be as efficient as possible and complete before the next ISR tick, 
-   which for Grbl must be less than 33.3usec (@30kHz ISR rate). Oscilloscope measured time in 
-   ISR is 5usec typical and 25usec maximum, well below requirement.
-   NOTE: This ISR expects at least one step to be executed per segment.
-*/
-// TODO: Replace direct updating of the int32 position counters in the ISR somehow. Perhaps use smaller
-// int8 variables and update position counters only when a segment completes. This can get complicated 
-// with probing and homing cycles that require true real-time positions.
+/* "The Servo Driver Interrupt" - */
 ISR(TIMER1_COMPA_vect)
 {        
-// SPINDLE_ENABLE_PORT ^= 1<<SPINDLE_ENABLE_BIT; // Debug: Used to time ISR
   if (busy) { return; } // The busy-flag is used to avoid reentering this interrupt
   
-  // Set the direction pins a couple of nanoseconds before we step the servos
-  DIRECTION_PORT = (DIRECTION_PORT & ~DIRECTION_MASK) | (st.dir_outbits & DIRECTION_MASK);
-
-  // Then pulse the stepping pins
-  #ifdef STEP_PULSE_DELAY
-    st.step_bits = (STEP_PORT & ~STEP_MASK) | st.step_outbits; // Store out_bits to prevent overwriting.
-  #else  // Normal operation
-    STEP_PORT = (STEP_PORT & ~STEP_MASK) | st.step_outbits;
-  #endif  
-
-  // Enable step pulse reset timer so that The Servo Port Reset Interrupt can reset the signal after
-  // exactly settings.pulse_microseconds microseconds, independent of the main Timer1 prescaler.
-  TCNT0 = st.step_pulse_time; // Reload Timer0 counter
-  TCCR0B = (1<<CS01); // Begin Timer0. Full speed, 1/8 prescaler
-
   busy = true;
   sei(); // Re-enable interrupts to allow Servo Port Reset Interrupt to fire on-time. 
          // NOTE: The remaining code in this ISR will finish before returning to main program.
     
   // If there is no step segment, attempt to pop one from the servo buffer
-  if (st.exec_segment == NULL) {
+  if (servo.exec_segment == NULL) {
     // Anything in the buffer? If so, load and initialize next step segment.
     if (segment_buffer_head != segment_buffer_tail) {
       // Initialize new step segment and load number of steps to execute
-      st.exec_segment = &segment_buffer[segment_buffer_tail];
+      servo.exec_segment = &segment_buffer[segment_buffer_tail];
 
       #ifndef ADAPTIVE_MULTI_AXIS_STEP_SMOOTHING
         // With AMASS is disabled, set timer prescaler for segments with slow step frequencies (< 250Hz).
-        TCCR1B = (TCCR1B & ~(0x07<<CS10)) | (st.exec_segment->prescaler<<CS10);
+        TCCR1B = (TCCR1B & ~(0x07<<CS10)) | (servo.exec_segment->prescaler<<CS10);
       #endif
 
       // Initialize step segment timing per step and load number of steps to execute.
-      OCR1A = st.exec_segment->cycles_per_tick;
-      st.step_count = st.exec_segment->n_step; // NOTE: Can sometimes be zero when moving slow.
+      OCR1A = servo.exec_segment->cycles_per_tick;
+      servo.step_count = servo.exec_segment->n_step; // NOTE: Can sometimes be zero when moving slow.
       // If the new segment starts a new planner block, initialize servo variables and counters.
       // NOTE: When the segment data index changes, this indicates a new planner block.
-      if ( st.exec_block_index != st.exec_segment->servo_block_index ) {
-        st.exec_block_index = st.exec_segment->servo_block_index;
-        st.exec_block = &servo_block_buffer[st.exec_block_index];
+      if ( servo.exec_block_index != servo.exec_segment->servo_block_index ) {
+        servo.exec_block_index = servo.exec_segment->servo_block_index;
+        servo.exec_block = &servo_block_buffer[servo.exec_block_index];
         
         // Initialize Bresenham line and distance counters
-        st.counter_x = (st.exec_block->step_event_count >> 1);
-        st.counter_y = st.counter_x;
-        st.counter_z = st.counter_x;        
+        servo.counter_x = (servo.exec_block->step_event_count >> 1);
+        servo.counter_y = servo.counter_x;
+        servo.counter_z = servo.counter_x;        
       }
 
-      st.dir_outbits = st.exec_block->direction_bits ^ dir_port_invert_mask; 
+      servo.dir_outbits = servo.exec_block->direction_bits ^ dir_port_invert_mask; 
 
       #ifdef ADAPTIVE_MULTI_AXIS_STEP_SMOOTHING
         // With AMASS enabled, adjust Bresenham axis increment counters according to AMASS level.
-        st.steps[X_AXIS] = st.exec_block->steps[X_AXIS] >> st.exec_segment->amass_level;
-        st.steps[Y_AXIS] = st.exec_block->steps[Y_AXIS] >> st.exec_segment->amass_level;
-        st.steps[Z_AXIS] = st.exec_block->steps[Z_AXIS] >> st.exec_segment->amass_level;
+        servo.steps[X_AXIS] = servo.exec_block->steps[X_AXIS] >> servo.exec_segment->amass_level;
+        servo.steps[Y_AXIS] = servo.exec_block->steps[Y_AXIS] >> servo.exec_segment->amass_level;
+        servo.steps[Z_AXIS] = servo.exec_block->steps[Z_AXIS] >> servo.exec_segment->amass_level;
       #endif
       
     } else {
@@ -369,92 +373,29 @@ ISR(TIMER1_COMPA_vect)
   probe_state_monitor();
    
   // Reset step out bits.
-  st.step_outbits = 0; 
+  servo.step_outbits = 0; 
 
-  // Execute step displacement profile by Bresenham line algorithm
-  #ifdef ADAPTIVE_MULTI_AXIS_STEP_SMOOTHING
-    st.counter_x += st.steps[X_AXIS];
-  #else
-    st.counter_x += st.exec_block->steps[X_AXIS];
-  #endif  
-  if (st.counter_x > st.exec_block->step_event_count) {
-    st.step_outbits |= (1<<X_STEP_BIT);
-    st.counter_x -= st.exec_block->step_event_count;
-    if (st.exec_block->direction_bits & (1<<X_DIRECTION_BIT)) { sys.position[X_AXIS]--; }
-    else { sys.position[X_AXIS]++; }
-  }
-  #ifdef ADAPTIVE_MULTI_AXIS_STEP_SMOOTHING
-    st.counter_y += st.steps[Y_AXIS];
-  #else
-    st.counter_y += st.exec_block->steps[Y_AXIS];
-  #endif    
-  if (st.counter_y > st.exec_block->step_event_count) {
-    /*st.step_outbits |= (1<<Y_STEP_BIT);
-    st.counter_y -= st.exec_block->step_event_count;
-    if (st.exec_block->direction_bits & (1<<Y_DIRECTION_BIT)) { sys.position[Y_AXIS]--; }
-    else { sys.position[Y_AXIS]++; }*/
-  }
-  #ifdef ADAPTIVE_MULTI_AXIS_STEP_SMOOTHING
-    st.counter_z += st.steps[Z_AXIS];
-  #else
-    st.counter_z += st.exec_block->steps[Z_AXIS];
-  #endif  
-  if (st.counter_z > st.exec_block->step_event_count) {
-    /*st.step_outbits |= (1<<Z_STEP_BIT);
-    st.counter_z -= st.exec_block->step_event_count;
-    if (st.exec_block->direction_bits & (1<<Z_DIRECTION_BIT)) { sys.position[Z_AXIS]--; }
-    else { sys.position[Z_AXIS]++; }*/
-  }  
 
   // During a homing cycle, lock out and prevent desired axes from moving.
-  if (sys.state == STATE_HOMING) { st.step_outbits &= sys.homing_axis_lock; }   
+  if (sys.state == STATE_HOMING) { /* servo.step_outbits &= sys.homing_axis_lock;*/ }   
 
-  st.step_count--; // Decrement step events count 
-  if (st.step_count == 0) {
+  servo.step_count--; // Decrement step events count 
+  if (servo.step_count == 0) {
     // Segment is complete. Discard current segment and advance segment indexing.
-    st.exec_segment = NULL;
+    servo.exec_segment = NULL;
     if ( ++segment_buffer_tail == SEGMENT_BUFFER_SIZE) { segment_buffer_tail = 0; }
   }
 
-  st.step_outbits ^= step_port_invert_mask;  // Apply step port invert mask    
+  servo.step_outbits ^= step_port_invert_mask;  // Apply step port invert mask    
   busy = false;
-// SPINDLE_ENABLE_PORT ^= 1<<SPINDLE_ENABLE_BIT; // Debug: Used to time ISR
+
 }
 
-
-/* The Servo Port Reset Interrupt: Timer0 OVF interrupt handles the falling edge of the step
-   pulse. This should always trigger before the next Timer1 COMPA interrupt and independently
-   finish, if Timer1 is disabled after completing a move.
-   NOTE: Interrupt collisions between the serial and servo interrupts can cause delays by
-   a few microseconds, if they execute right before one another. Not a big deal, but can
-   cause issues at high step rates if another high frequency asynchronous interrupt is 
-   added to Grbl.
-*/
-// This interrupt is enabled by ISR_TIMER1_COMPAREA when it sets the motor port bits to execute
-// a step. This ISR resets the motor port after a short period (settings.pulse_microseconds) 
-// completing one step cycle.
-ISR(TIMER0_OVF_vect)
-{
-  // Reset stepping pins (leave the direction pins)
-  STEP_PORT = (STEP_PORT & ~STEP_MASK) | (step_port_invert_mask & STEP_MASK); 
-  TCCR0B = 0; // Disable Timer0 to prevent re-entering this interrupt when it's not needed. 
-}
-#ifdef STEP_PULSE_DELAY
-  // This interrupt is used only when STEP_PULSE_DELAY is enabled. Here, the step pulse is
-  // initiated after the STEP_PULSE_DELAY time period has elapsed. The ISR TIMER2_OVF interrupt
-  // will then trigger after the appropriate settings.pulse_microseconds, as in normal operation.
-  // The new timing between direction, step pulse, and step complete events are setup in the
-  // servo_wake_up() routine.
-  ISR(TIMER0_COMPA_vect) 
-  { 
-    STEP_PORT = st.step_bits; // Begin step pulse.
-  }
-#endif
-
-
+    st_update_plan_block_parameters();
 // Generates the step and direction port invert masks used in the Servo Interrupt Driver.
 void servo_generate_step_dir_invert_masks()
-{  
+{
+  /*
   uint8_t idx;
   step_port_invert_mask = 0;
   dir_port_invert_mask = 0;
@@ -462,6 +403,7 @@ void servo_generate_step_dir_invert_masks()
     if (bit_istrue(settings.step_invert_mask,bit(idx))) { step_port_invert_mask |= get_step_pin_mask(idx); }
     if (bit_istrue(settings.dir_invert_mask,bit(idx))) { dir_port_invert_mask |= get_direction_pin_mask(idx); }
   }
+  */
 }
 
 
@@ -475,8 +417,8 @@ void servo_reset()
   
   // Initialize servo algorithm variables.
   memset(&prep, 0, sizeof(prep));
-  memset(&st, 0, sizeof(st));
-  st.exec_segment = NULL;
+  memset(&servo, 0, sizeof(servo));
+  servo.exec_segment = NULL;
   pl_block = NULL;  // Planner block pointer used by segment buffer
   segment_buffer_tail = 0;
   segment_buffer_head = 0; // empty = tail
@@ -486,8 +428,21 @@ void servo_reset()
   servo_generate_step_dir_invert_masks();
       
   // Initialize step and direction port pins.
-  STEP_PORT = (STEP_PORT & ~STEP_MASK) | step_port_invert_mask;
-  DIRECTION_PORT = (DIRECTION_PORT & ~DIRECTION_MASK) | dir_port_invert_mask;
+  //  STEP_PORT = (STEP_PORT & ~STEP_MASK) | step_port_invert_mask;
+  //  DIRECTION_PORT = (DIRECTION_PORT & ~DIRECTION_MASK) | dir_port_invert_mask;
+
+  //	servo.desired_to_use = desired_tick;
+  servo.output = 0;
+  servo.output_direction = 0;
+  servo.command_vel = 0;
+  servo.mixed_mode_state = MIXED_MODE_STATE_OFF;
+
+  pid_clear_state(&servo.pid);
+  pid_clear_state(&servo.pid_vel);
+
+  // circBufferReset(&servo.target_buffer);  CIRC
+  // circBufferReset(&servo.actual_buffer);  CIRC
+
 }
 
 
@@ -495,9 +450,9 @@ void servo_reset()
 void servo_init()
 {
   // Configure step and direction interface pins
-  STEP_DDR |= STEP_MASK;
-  SERVOS_DISABLE_DDR |= 1<<SERVOS_DISABLE_BIT;
-  DIRECTION_DDR |= DIRECTION_MASK;
+  //  STEP_DDR |= STEP_MASK;
+  // SERVOS_DISABLE_DDR |= 1<<SERVOS_DISABLE_BIT;
+  // DIRECTION_DDR |= DIRECTION_MASK;
 
   // Configure Timer 1: Servo Driver Interrupt
   TCCR1B &= ~(1<<WGM13); // waveform generation = 0100 = CTC
@@ -515,8 +470,46 @@ void servo_init()
   #ifdef STEP_PULSE_DELAY
     TIMSK0 |= (1<<OCIE0A); // Enable Timer0 Compare Match A interrupt
   #endif
+
+    motor_init(&motor, 0);
+    
+    // circBufferInit(&servo.target_buffer, target_buffer_data, target_buffer_data_size);  CIRC
+    // circBufferInit(&servo.actual_buffer, actual_buffer_data, actual_buffer_data_size);  CIRC
+    
+    servo.maximum_pwm = FULL_PWM;
+    servo.pid.max_output = FULL_PWM;
+    servo.pid_vel.max_output = FULL_PWM;
+    
+    //    ctrlClearState(servo);
+    //    servo.actual_buffer.size = 1;	// Default time delta for velocity is 1
+    servo.motor = &motor;
+    servo.notified_initialized = 0;
+    servo.initialized = 0;
+    servo.enable = ENABLE_OFF;
+    servo.control_mode = CONTROL_MODE_POS;
+    servo.feedback_mode = FEEDBACK_MODE_POT;
+    servo.polarity = POLARITY_REGULAR;
+    servo.stream_mode = STREAM_MODE_OFF;
+    servo_reset();
+	
 }
-  
+
+void servo_set_feedback(uint8_t new_pot_mode){
+  servo.feedback_mode = new_pot_mode;
+  servo_reset();
+}
+
+void servo_set_control_mode(uint8_t ctrl_mode){
+  servo.control_mode = ctrl_mode;
+  if( ctrl_mode == CONTROL_MODE_POS ) {
+    servo.pid.max_output = servo.maximum_pwm;
+  }
+  else{
+    servo.pid_vel.max_output = servo.maximum_pwm;
+  }
+  servo_reset();
+}
+
 
 // Called by planner_recalculate() when the executing block is updated by the new plan.
 void servo_update_plan_block_parameters()
@@ -854,6 +847,118 @@ void servo_prep_buffer()
 
   } 
 }      
+
+void servo_calculate_output(){
+  int32_t actual_tick;
+  // Here we decide which reference to use
+  if (servo.feedback_mode == FEEDBACK_MODE_POT) {
+    actual_tick = servo.motor->actual_pot;
+  }
+  else {
+    actual_tick = servo.motor->actual_enc;
+  }
+  //circBufferPutLong(&servo.actual_buffer, actual_tick);
+
+  /*
+  if (servo.target_buffer.length < 4 ||
+      servo.actual_buffer.length != servo.actual_buffer.size ||
+      servo.initialized == 0) {
+    servo.output = 0;
+    return;
+  }
+  */
+  
+  servo.actual_tick_diff = actual_tick /*- circBufferPeekFirstLong(&servo.actual_buffer)*/;
+  int32_t vel_control;
+  int32_t desired_tick;
+
+  /*
+   * In non-streaming mode we just take the most recent target
+   */
+  if (servo.stream_mode == STREAM_MODE_OFF) {
+    desired_tick = 0; //circBufferPeekLastLong(&servo.target_buffer);
+  }
+  /*
+   * In streaming mode we always move towards the next positions in the buffer
+   */
+  else {
+    int32_t last_actual = 0; //circBufferPeekLongAtIndex(&servo.actual_buffer, servo.actual_buffer.length-8);
+    desired_tick = 0; //circBufferPeekFirstLong(&servo.target_buffer);
+	  
+    //    while( servo.target_buffer.length > 4 ){
+      // In this case we just passed the desired_tick position and should advance to the next one
+      if( 	(actual_tick >= desired_tick && last_actual <= desired_tick) ||
+		(actual_tick <= desired_tick && last_actual >= desired_tick) ){
+	//circBufferGetFirstLong(&servo.target_buffer);
+	desired_tick = 0; //circBufferPeekFirstLong(&servo.target_buffer);
+      }
+      // In this case we need to move towards this desired tick target
+      else if( 	(actual_tick > desired_tick && last_actual > desired_tick) ||
+		(actual_tick < desired_tick && last_actual < desired_tick) ){
+	//break;
+      }
+      //}
+  }
+
+  /*
+   * Here we determine how to calculate the PID
+   */
+  if( servo.control_mode == CONTROL_MODE_VEL ){
+    if( servo.maximum_vel > 0 ){
+      if( desired_tick > 0 ){
+	servo.command_vel += MIN(desired_tick-servo.command_vel, servo.maximum_acc);
+      }
+      else{
+	servo.command_vel += MAX(desired_tick-servo.command_vel, -servo.maximum_acc);
+      }
+      servo.command_vel = LIMIT(servo.command_vel, -servo.maximum_vel, servo.maximum_vel);
+      servo.output = pid_calculate_output(&servo.pid_vel, servo.command_vel, servo.actual_tick_diff);
+    }
+    else{
+      servo.output = pid_calculate_output(&servo.pid_vel, desired_tick, servo.actual_tick_diff);
+    }
+  }
+  else if( servo.control_mode == CONTROL_MODE_POS ){
+    servo.output = pid_calculate_output(&servo.pid, desired_tick, actual_tick);
+  }
+  else if( servo.control_mode == CONTROL_MODE_MIXED ){
+    // If our last output was positive
+    if( servo.output >= 0 ){
+      servo.command_vel += MIN(servo.maximum_vel-servo.command_vel, servo.maximum_acc);
+    }
+    else{
+      servo.command_vel += MAX(-servo.maximum_vel-servo.command_vel, -servo.maximum_acc);
+    }
+    // Set the limit on the output as the commanded velocity (so it doesn't accumulate integrator while acceleration or velocity capped)
+    servo.pid.max_output = ABS(servo.command_vel);
+
+    vel_control = pid_calculate_output(&servo.pid, desired_tick, actual_tick);
+    servo.output = pid_calculate_output(&servo.pid_vel, vel_control, servo.actual_tick_diff);
+  }
+
+  /*
+   * If we are streaming then we also go slower when going towards intermediate targets
+   */
+  if( servo.stream_mode == STREAM_MODE_ON ){
+    //servo.output = servo.output >> ( servo.target_buffer.size-servo.target_buffer.length );
+  }
+
+  /*
+   * If the encoder phases are flipped with respect to the motor phases, this parameter will take care of that
+   */
+  if( servo.polarity == POLARITY_FLIPPED ) servo.output = -(servo.output);
+
+  if( servo.output < 0 ){
+    servo.output = -(servo.output);
+    servo.output_direction = OUTPUT_DIRECTION_CCW;
+  }
+  else if( servo.output > 0 ){
+    servo.output_direction = OUTPUT_DIRECTION_CW;
+  }
+  else{
+    servo.output_direction = OUTPUT_DIRECTION_NONE;
+  }
+}
 
 
 // Called by runtime status reporting to fetch the current speed being executed. This value

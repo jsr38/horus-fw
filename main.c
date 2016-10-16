@@ -46,7 +46,11 @@ int main(void)
   // Initialize system upon power-up.
   serial_init();   // Setup serial baud rate and interrupts
   settings_init(); // Load grbl settings from EEPROM
+#ifdef CPU_MAP_ATMEGA328P_HORUS_SERVO
+  servo_init();  // Configure servo pins and interrupts
+#else
   stepper_init();  // Configure stepper pins and interrupt timers
+#endif
   system_init();   // Configure pinout pins and pin-change interrupt
   ldr_init();        //Setup the ADC
 

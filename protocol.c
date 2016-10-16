@@ -22,6 +22,7 @@
   terms of the GPLv3. See COPYING for more details.
     Copyright (c) 2009-2011 Simen Svale Skogsrud
     Copyright (c) 2011-2014 Sungeun K. Jeon
+    Copyright (c) 2016 Jeremy Simas Reeve
 */
 
 #include "system.h"
@@ -246,8 +247,12 @@ void protocol_execute_runtime()
     if (rt_exec & EXEC_CYCLE_START) { 
       if (sys.state == STATE_QUEUED) {
         sys.state = STATE_CYCLE;
+#ifdef CPU_MAP_ATMEGA328P_HORUS_SERVO
+	
+#else
         st_prep_buffer(); // Initialize step segment buffer before beginning cycle.
         st_wake_up();
+#endif
         if (bit_istrue(settings.flags,BITFLAG_AUTO_START)) {
           sys.auto_start = true; // Re-enable auto start after feed hold.
         } else {

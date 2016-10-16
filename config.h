@@ -22,6 +22,7 @@
   terms of the GPLv3. See COPYING for more details.
     Copyright (c) 2009-2011 Simen Svale Skogsrud
     Copyright (c) 2011-2014 Sungeun K. Jeon
+    Copyright (c) 2016 Jeremy Simas Reeve
 */ 
   
 // This file contains compile-time configurations for Grbl's internal system. For the most part,
@@ -36,7 +37,7 @@
 
 
 // Default settings. Used when resetting EEPROM. Change to desired name in defaults.h
-#define DEFAULTS_HORUS
+#define DEFAULTS_HORUS_SERVO
 
 // This enables the serial port associated to the Bluetooth interface
 //#define BTENABLED              // Enable BT interface 
@@ -51,7 +52,7 @@
 
 // Default cpu mappings. Grbl officially supports the Arduino Uno only. Other processor types
 // may exist from user-supplied templates or directly user-defined in cpu_map.h
-#define CPU_MAP_ATMEGA328P_HORUS // Arduino Uno CPU for Horus Project
+#define CPU_MAP_ATMEGA328P_HORUS_SERVO // Arduino Uno CPU for Horus Project with DC Motor servo
 
 // Define runtime command special characters. These characters are 'picked-off' directly from the
 // serial read data stream and are not passed to the grbl line execution parser. Select characters
@@ -122,7 +123,7 @@
 // Allows GRBL to report the real-time feed rate.  Enabling this means that GRBL will be reporting more 
 // data with each status update.
 // NOTE: This is experimental and doesn't quite work 100%. Maybe fixed or refactored later.
-// #define REPORT_REALTIME_RATE // Disabled by default. Uncomment to enable.
+#define REPORT_REALTIME_RATE // Disabled by default. Uncomment to enable.
 
 // Upon a successful probe cycle, this option provides immediately feedback of the probe coordinates
 // through an automatically generated message. If disabled, users can still access the last probe
